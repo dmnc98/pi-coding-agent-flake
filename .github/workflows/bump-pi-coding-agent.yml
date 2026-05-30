@@ -1,0 +1,86 @@
+name: Auto-bump pi-coding-agent
+
+on:
+  schedule:
+    # Mondays 06:17 UTC. Offset from :00 to avoid GitHub cron contention.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: auto-bump-pi-coding-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version, src.hash, npmDepsHash via nix-update
+        run: |
+          nix run nixpkgs#nix-update -- --flake pi-coding-agent
+
+      - name: Rotate packageLock outputHash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- default.nix; then
+            echo "nix-update made no changes; nothing to rotate."
+            exit 0
+          fi
+
+          # Force packageLock's FOD to fail with a hash mismatch so we can read
+          # the new hash from the build output. `outputHash = ` (with the
+          # leading space) is unique to the packageLock derivation; it won't
+          # match `outputHashAlgo` / `outputHashMode` / `npmDepsHash`.
+          sed -i -E 's|outputHash = "sha256-[A-Za-z0-9+/=]+"|outputHash = lib.fakeHash|' default.nix
+
+          set +e
+          out=$(nix build .#pi-coding-agent 2>&1)
+          set -e
+          echo "$out"
+
+          got=$(printf '%s\n' "$out" \
+            | awk '/got:[[:space:]]+sha256-/ { print $NF; exit }')
+
+          if [ -z "$got" ]; then
+            echo "::error::Could not extract packageLock hash from build output." >&2
+            exit 1
+          fi
+
+          sed -i "s|outputHash = lib.fakeHash|outputHash = \"$got\"|" default.nix
+
+          echo "New packageLock outputHash: $got"
+
+      - name: Verify build
+        run: |
+          if git diff --quiet -- default.nix; then
+            echo "No changes; skipping verification."
+            exit 0
+          fi
+          nix build .#pi-coding-agent
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: auto/bump-pi-coding-agent
+          delete-branch: true
+          title: "Bump pi-coding-agent"
+          commit-message: "Bump pi-coding-agent"
+          body: |
+            Automated version bump.
+
+            - `nix-update` refreshed `version`, `src.hash`, and `npmDepsHash`.
+            - `packageLock.outputHash` rotated by re-running the FOD with `lib.fakeHash`.
+            - Final `nix build .#pi-coding-agent` passed in CI.
