@@ -10,11 +10,11 @@
 
 let
   pname = "pi-coding-agent";
-  version = "0.77.0";
+  version = "0.78.0";
 
   src = fetchurl {
     url = "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-${version}.tgz";
-    hash = "sha256-EFOKehAW6zEIyx72Xb9t4uMdJvLAka455W72qcIaTDE=";
+    hash = "sha256-oEfadYAdkTXjaKRxHQbQyktqtwiAGrgv0TZt3h7t0O4=";
   };
 
   # Upstream tarball ships an old lockfileVersion-1 npm-shrinkwrap.json that
@@ -47,7 +47,7 @@ let
 
     outputHashAlgo = "sha256";
     outputHashMode = "recursive";
-    outputHash = "sha256-IVQH9cN3NKmEc8tpsP7H2wYOm3Qmanjv02qoxwcD/z0=";
+    outputHash = "sha256-fhuXctUjhpWKbX15NjTLs0V1GzgnP9+dwirx1/wCplo=";
   };
 in
 buildNpmPackage {
@@ -58,7 +58,7 @@ buildNpmPackage {
     cp ${packageLock}/package-lock.json package-lock.json
   '';
 
-  npmDepsHash = "sha256-yr74CFu2qZKXpr9urVVvssLOBJNplFO24iWzeGjWV04=";
+  npmDepsHash = "sha256-1bEUUrtAyaZLzoh8p8QPZAY7S/WZ/mx+XgYjC3RMsJs=";
 
   # dist/ is prebuilt; matches upstream's `npm install -g --ignore-scripts`.
   dontNpmBuild = true;
