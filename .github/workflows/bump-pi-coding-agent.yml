@@ -30,7 +30,7 @@ jobs:
         run: |
           nix run nixpkgs#nix-update -- --flake pi-coding-agent
 
-      - name: Rotate packageLock outputHash
+      - name: Rotate packageLock outputHash and npmDepsHash
         run: |
           set -euo pipefail
 
@@ -39,28 +39,40 @@ jobs:
             exit 0
           fi
 
-          # Force packageLock's FOD to fail with a hash mismatch so we can read
-          # the new hash from the build output. `outputHash = ` (with the
-          # leading space) is unique to the packageLock derivation; it won't
-          # match `outputHashAlgo` / `outputHashMode` / `npmDepsHash`.
-          sed -i -E 's|outputHash = "sha256-[A-Za-z0-9+/=]+"|outputHash = lib.fakeHash|' default.nix
+          # Helper: replace `<attr> = "sha256-..."` with lib.fakeHash, run the
+          # build, capture the `got:` hash from the first FOD failure, and
+          # substitute it back. The packageLock FOD is built first (it's a
+          # build input), so its hash mismatch surfaces before npmDepsHash's —
+          # which is why we rotate them in dependency order.
+          rotate() {
+            local attr="$1"
+            sed -i -E "s|${attr} = \"sha256-[A-Za-z0-9+/=]+\"|${attr} = lib.fakeHash|" default.nix
 
-          set +e
-          out=$(nix build .#pi-coding-agent 2>&1)
-          set -e
-          echo "$out"
+            local out
+            set +e
+            out=$(nix build .#pi-coding-agent 2>&1)
+            set -e
+            echo "$out"
 
-          got=$(printf '%s\n' "$out" \
-            | awk '/got:[[:space:]]+sha256-/ { print $NF; exit }')
+            local got
+            got=$(printf '%s\n' "$out" \
+              | awk '/got:[[:space:]]+sha256-/ { print $NF; exit }')
 
-          if [ -z "$got" ]; then
-            echo "::error::Could not extract packageLock hash from build output." >&2
-            exit 1
-          fi
+            if [ -z "$got" ]; then
+              echo "::error::Could not extract ${attr} from build output." >&2
+              return 1
+            fi
 
-          sed -i "s|outputHash = lib.fakeHash|outputHash = \"$got\"|" default.nix
+            sed -i "s|${attr} = lib.fakeHash|${attr} = \"$got\"|" default.nix
+            echo "New ${attr}: $got"
+          }
 
-          echo "New packageLock outputHash: $got"
+          # `outputHash` (the packageLock FOD) must come first: nix-update may
+          # have written a wrong npmDepsHash if the packageLock FOD failed
+          # before the npm-deps FOD during its detection build. Fixing
+          # packageLock first lets the npm-deps mismatch surface cleanly.
+          rotate outputHash
+          rotate npmDepsHash
 
       - name: Verify build
         run: |
