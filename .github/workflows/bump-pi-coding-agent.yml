@@ -26,30 +26,78 @@ jobs:
             experimental-features = nix-command flakes
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bump version, src.hash, npmDepsHash via nix-update
-        run: |
-          nix run nixpkgs#nix-update -- --flake pi-coding-agent
-
-      - name: Rotate packageLock outputHash and npmDepsHash
+      - name: Resolve latest version from npm
+        id: resolve
         run: |
           set -euo pipefail
 
-          if git diff --quiet -- default.nix; then
-            echo "nix-update made no changes; nothing to rotate."
-            exit 0
+          current=$(grep -oE 'version = "[0-9]+\.[0-9]+\.[0-9]+"' default.nix \
+            | head -1 \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          latest=$(curl -fsSL https://registry.npmjs.org/@earendil-works/pi-coding-agent \
+            | nix run nixpkgs#jq -- -r '."dist-tags".latest')
+
+          echo "Current: ${current}"
+          echo "Latest:  ${latest}"
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+
+          if [ "$current" = "$latest" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # Helper: replace `<attr> = "sha256-..."` with lib.fakeHash, run the
-          # build, capture the `got:` hash from the first FOD failure, and
-          # substitute it back. The packageLock FOD is built first (it's a
-          # build input), so its hash mismatch surfaces before npmDepsHash's —
-          # which is why we rotate them in dependency order.
+      - name: Bump version and regenerate vendored package-lock.json
+        if: steps.resolve.outputs.changed == 'true'
+        env:
+          CURRENT: ${{ steps.resolve.outputs.current }}
+          LATEST: ${{ steps.resolve.outputs.latest }}
+        run: |
+          set -euo pipefail
+
+          # Bump version and clear src.hash + npmDepsHash for rotation.
+          sed -i "s|version = \"${CURRENT}\"|version = \"${LATEST}\"|" default.nix
+          sed -i -E 's|hash = "sha256-[A-Za-z0-9+/=]+"|hash = lib.fakeHash|' default.nix
+          sed -i -E 's|npmDepsHash = "sha256-[A-Za-z0-9+/=]+"|npmDepsHash = lib.fakeHash|' default.nix
+
+          # Regenerate vendored lockfile from the new tarball. This is what
+          # makes the build deterministic across consumers: no network resolver
+          # at build time, no spontaneous drift between bumps.
+          workdir=$(mktemp -d)
+          trap 'rm -rf "$workdir"' EXIT
+
+          curl -fsSL \
+            -o "$workdir/pi.tgz" \
+            "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-${LATEST}.tgz"
+          tar -xzf "$workdir/pi.tgz" -C "$workdir"
+
+          pushd "$workdir/package" >/dev/null
+          rm -f npm-shrinkwrap.json package-lock.json
+          nix shell nixpkgs#nodejs_22 -c npm install \
+            --package-lock-only \
+            --ignore-scripts \
+            --no-audit \
+            --no-fund
+          popd >/dev/null
+
+          cp "$workdir/package/package-lock.json" package-lock.json
+          echo "Regenerated package-lock.json for ${LATEST}."
+
+      - name: Rotate src.hash and npmDepsHash
+        if: steps.resolve.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+
+          # Replace `<attr> = lib.fakeHash` with the real hash captured from
+          # the FOD failure during a build. src.hash (the tarball FOD) is
+          # checked first by Nix, so its mismatch surfaces before
+          # npmDepsHash's — we rotate in that dependency order.
           rotate() {
             local attr="$1"
-            sed -i -E "s|${attr} = \"sha256-[A-Za-z0-9+/=]+\"|${attr} = lib.fakeHash|" default.nix
 
-            local out
             set +e
+            local out
             out=$(nix build .#pi-coding-agent 2>&1)
             set -e
             echo "$out"
@@ -67,44 +115,26 @@ jobs:
             echo "New ${attr}: $got"
           }
 
-          # `outputHash` (the packageLock FOD) must come first: nix-update may
-          # have written a wrong npmDepsHash if the packageLock FOD failed
-          # before the npm-deps FOD during its detection build. Fixing
-          # packageLock first lets the npm-deps mismatch surface cleanly.
-          rotate outputHash
+          rotate hash
           rotate npmDepsHash
 
       - name: Verify build
-        run: |
-          if git diff --quiet -- default.nix; then
-            echo "No changes; skipping verification."
-            exit 0
-          fi
-          nix build .#pi-coding-agent
-
-      - name: Extract new version
-        id: version
-        run: |
-          version=$(grep -oE 'version = "[0-9]+\.[0-9]+\.[0-9]+"' default.nix \
-            | head -1 \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          if [ -z "$version" ]; then
-            echo "::error::Could not extract version from default.nix"
-            exit 1
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+        if: steps.resolve.outputs.changed == 'true'
+        run: nix build .#pi-coding-agent
 
       - name: Open PR
+        if: steps.resolve.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: auto/bump-pi-coding-agent
           delete-branch: true
-          title: "Bump pi-coding-agent to ${{ steps.version.outputs.version }}"
-          commit-message: "Bump pi-coding-agent to ${{ steps.version.outputs.version }}"
+          title: "Bump pi-coding-agent to ${{ steps.resolve.outputs.latest }}"
+          commit-message: "Bump pi-coding-agent to ${{ steps.resolve.outputs.latest }}"
           body: |
-            Automated version bump to **${{ steps.version.outputs.version }}**.
+            Automated version bump to **${{ steps.resolve.outputs.latest }}**.
 
-            - `nix-update` refreshed `version`, `src.hash`, and `npmDepsHash`.
-            - `packageLock.outputHash` rotated by re-running the FOD with `lib.fakeHash`.
+            - `version` bumped from ${{ steps.resolve.outputs.current }} to ${{ steps.resolve.outputs.latest }}.
+            - `package-lock.json` regenerated from the new tarball (lockfileVersion 3, vendored in-tree).
+            - `src.hash` and `npmDepsHash` rotated via `lib.fakeHash`.
             - Final `nix build .#pi-coding-agent` passed in CI.
