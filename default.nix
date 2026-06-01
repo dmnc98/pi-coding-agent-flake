@@ -4,11 +4,9 @@
   fetchurl,
   makeWrapper,
   nodejs_22,
-  stdenvNoCC,
-  cacert,
 }:
 
-let
+buildNpmPackage rec {
   pname = "pi-coding-agent";
   version = "0.78.0";
 
@@ -18,47 +16,15 @@ let
   };
 
   # Upstream tarball ships an old lockfileVersion-1 npm-shrinkwrap.json that
-  # prefetch-npm-deps can't parse. Regenerate a v3 lockfile via npm's resolver.
-  # This needs network, so it's a fixed-output derivation.
-  packageLock = stdenvNoCC.mkDerivation {
-    name = "${pname}-${version}-package-lock";
-    inherit src;
-
-    nativeBuildInputs = [ nodejs_22 cacert ];
-    dontConfigure = true;
-
-    buildPhase = ''
-      runHook preBuild
-      rm -f npm-shrinkwrap.json package-lock.json
-      HOME=$TMPDIR npm install \
-        --package-lock-only \
-        --ignore-scripts \
-        --no-audit \
-        --no-fund
-      runHook postBuild
-    '';
-
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out
-      cp package-lock.json $out/
-      runHook postInstall
-    '';
-
-    outputHashAlgo = "sha256";
-    outputHashMode = "recursive";
-    outputHash = "sha256-fhuXctUjhpWKbX15NjTLs0V1GzgnP9+dwirx1/wCplo=";
-  };
-in
-buildNpmPackage {
-  inherit pname version src;
-
+  # prefetch-npm-deps can't parse. We vendor a regenerated lockfileVersion-3
+  # package-lock.json next to this file so the build is fully deterministic —
+  # no network resolver, no drifting hash. Refresh it on every version bump.
   postPatch = ''
     rm -f npm-shrinkwrap.json
-    cp ${packageLock}/package-lock.json package-lock.json
+    cp ${./package-lock.json} package-lock.json
   '';
 
-  npmDepsHash = "sha256-1bEUUrtAyaZLzoh8p8QPZAY7S/WZ/mx+XgYjC3RMsJs=";
+  npmDepsHash = "sha256-HoKJ5/LJe6AZoGtuRMA8+mnY0KJFFxawGb+S5ZUo1ww=";
 
   # dist/ is prebuilt; matches upstream's `npm install -g --ignore-scripts`.
   dontNpmBuild = true;
