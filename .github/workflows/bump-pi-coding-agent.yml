@@ -2,8 +2,10 @@ name: Auto-bump pi-coding-agent
 
 on:
   schedule:
-    # Mondays 06:17 UTC. Offset from :00 to avoid GitHub cron contention.
-    - cron: "17 6 * * 1"
+    # Daily at 06:17 UTC. Offset from :00 to avoid GitHub cron contention.
+    # Cheap when there is nothing to do: the resolve step compares the pinned
+    # version against dist-tags.latest and every later step is gated on it.
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 concurrency:
