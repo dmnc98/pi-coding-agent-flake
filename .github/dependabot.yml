@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  # Keep the action versions in .github/workflows/ current. GitHub deprecates
+  # runner Node versions on its own schedule (actions/checkout@v4 is already
+  # being force-run on Node 24), so pinned major versions rot silently until a
+  # workflow breaks.
+  #
+  # Deliberately no npm ecosystem entry: package-lock.json here is a vendored
+  # build artifact, regenerated from the upstream tarball by the auto-bump
+  # workflow and paired with npmDepsHash in default.nix. A Dependabot bump
+  # would desync that hash and break `nix build`.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    commit-message:
+      prefix: Bump
+    # One PR for all action bumps rather than one per action.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
