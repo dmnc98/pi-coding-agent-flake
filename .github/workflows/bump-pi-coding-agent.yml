@@ -74,7 +74,14 @@ jobs:
 
           pushd "$workdir/package" >/dev/null
           rm -f npm-shrinkwrap.json package-lock.json
-          nix shell nixpkgs#nodejs_22 -c npm install \
+          # npm 10 (bundled with nodejs_22) crashes in Arborist's peer-set
+          # resolution on upstream's vitest 4 devDependency:
+          #   TypeError: Cannot read properties of null (reading 'edgesOut')
+          # npm 11 (nodejs_24) resolves it fine and still writes
+          # lockfileVersion 3, which buildNpmPackage consumes. The package
+          # itself is still built against nodejs_22 — this only swaps the
+          # resolver used to generate the lockfile.
+          nix shell nixpkgs#nodejs_24 -c npm install \
             --package-lock-only \
             --ignore-scripts \
             --no-audit \
