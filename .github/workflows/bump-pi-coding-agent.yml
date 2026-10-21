@@ -15,6 +15,8 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # Needed to dispatch tag-on-version-bump after merging (see below).
+  actions: write
 
 jobs:
   bump:
@@ -132,6 +134,7 @@ jobs:
         run: nix build .#pi-coding-agent
 
       - name: Open PR
+        id: pr
         if: steps.resolve.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
@@ -147,3 +150,23 @@ jobs:
             - `package-lock.json` regenerated from the new tarball (lockfileVersion 3, vendored in-tree).
             - `src.hash` and `npmDepsHash` rotated via `lib.fakeHash`.
             - Final `nix build .#pi-coding-agent` passed in CI.
+
+            Merged automatically by the workflow once the build above succeeded.
+
+      # Every earlier step fails the job on error, so reaching this point means
+      # the build passed. Merge without waiting for a manual review.
+      - name: Merge PR
+        if: steps.resolve.outputs.changed == 'true' && steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.pull-request-number }}
+        run: gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" --merge --delete-branch
+
+      # Pushes made with GITHUB_TOKEN do not trigger other workflows, so the
+      # merge above will not fire tag-on-version-bump's push trigger.
+      # workflow_dispatch is exempt from that rule, so trigger it explicitly.
+      - name: Trigger tag-on-version-bump
+        if: steps.resolve.outputs.changed == 'true' && steps.pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run tag-on-version-bump.yml --repo "$GITHUB_REPOSITORY" --ref main
